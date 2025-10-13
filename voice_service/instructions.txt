@@ -1,0 +1,8 @@
+pyttsx3
+
+
+rajneesh.kumar@MQTT9DYDT4 gpt_tio % python3.11 -m venv tts_env 
+
+rajneesh.kumar@MQTT9DYDT4 gpt_tio % source tts_env/bin/activate
+
+(tts_env) rajneesh.kumar@MQTT9DYDT4 gpt_tio % pip install TTS

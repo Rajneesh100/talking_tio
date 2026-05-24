@@ -83,6 +83,12 @@ type Agent struct {
 	// VisionPath is the JSON snapshot file written by vision/observe.py.
 	// Empty string disables visual context injection.
 	VisionPath string
+
+	// lastVisualSnapshot is the camera snapshot we injected on the previous
+	// Turn. Used to compute a "since last turn" delta line so the model can
+	// track changes that happen between user utterances (longer horizon than
+	// the 5-second motion window inside one snapshot's buffer).
+	lastVisualSnapshot *vision.Snapshot
 }
 
 func New(chat llm.ChatProvider, mem *memory.Store, reg *tools.Registry, maxIter, maxCtx int) *Agent {
@@ -253,11 +259,41 @@ func (a *Agent) appendUser(userText string, mems []memory.Memory) {
 	// Visual context (if the sidecar is running and the snapshot is fresh).
 	// Goes before memories so the model reads the "is this even for me?"
 	// hint first.
+	//
+	// Three lines when applicable:
+	//   now:                 current frame summary
+	//   recent (5s):         motion inside the rolling buffer
+	//   since last turn (T): delta vs the snapshot we injected previously
 	if snap, ok := vision.Read(a.VisionPath); ok {
 		sideLog("visual", "%s (age %.1fs)", snap.Summary, snap.AgeSeconds)
 		sb.WriteString("[visual context]\n")
+		sb.WriteString("now: ")
 		sb.WriteString(snap.Summary)
-		sb.WriteString("\n\n")
+		sb.WriteString("\n")
+
+		if snap.RecentMotion != "" {
+			sideLog("motion", "recent: %s", snap.RecentMotion)
+			sb.WriteString("recent (5s): ")
+			sb.WriteString(snap.RecentMotion)
+			sb.WriteString("\n")
+		}
+
+		if a.lastVisualSnapshot != nil {
+			gap := snap.Timestamp.Sub(a.lastVisualSnapshot.Timestamp)
+			if gap > 0 {
+				delta := vision.Delta(*a.lastVisualSnapshot, snap)
+				if delta != "" {
+					gapStr := formatGap(gap)
+					sideLog("delta", "%s ago: %s", gapStr, delta)
+					fmt.Fprintf(&sb, "since last turn (%s ago): %s\n", gapStr, delta)
+				}
+			}
+		}
+
+		sb.WriteString("\n")
+		// Stash this snapshot so the NEXT turn can diff against it.
+		snapCopy := snap
+		a.lastVisualSnapshot = &snapCopy
 	}
 
 	if len(mems) > 0 {

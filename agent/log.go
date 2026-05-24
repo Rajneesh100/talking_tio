@@ -3,6 +3,7 @@ package agent
 import (
 	"fmt"
 	"strings"
+	"time"
 )
 
 // ANSI dim so the trace lines visually recede behind the bold You: / Angela:
@@ -41,6 +42,19 @@ func firstWords(s string, n int) string {
 		return strings.Join(fields, " ")
 	}
 	return strings.Join(fields[:n], " ") + "…"
+}
+
+// formatGap renders a duration as a short human label: "12s", "3m", "2h".
+// Used by the "since last turn" visual-context line.
+func formatGap(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm", int(d.Minutes()))
+	default:
+		return fmt.Sprintf("%dh", int(d.Hours()))
+	}
 }
 
 // continuation prints a side-channel line WITHOUT a label, aligning under

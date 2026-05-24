@@ -69,7 +69,14 @@ type geminiRequest struct {
 
 // agentOutputSchema mirrors agent.AgentOutput. Gemini enforces this on the
 // server side, so the model literally cannot put prose around the JSON or
-// invent fields.
+// invent top-level fields.
+//
+// Note: `args` is intentionally NOT in the tool_calls item schema. Gemini's
+// structured output treats an OBJECT-typed field with no `properties` as an
+// empty {}, which prevents the model from passing real tool arguments. With
+// `args` omitted from the schema, the model falls back to the args spec in
+// the system prompt (each tool's own JSON schema is listed there) and emits
+// them freely.
 var agentOutputSchema = &geminiSchema{
 	Type: "OBJECT",
 	Properties: map[string]*geminiSchema{
@@ -82,18 +89,33 @@ var agentOutputSchema = &geminiSchema{
 			Items: &geminiSchema{
 				Type: "OBJECT",
 				Properties: map[string]*geminiSchema{
-					"name": {Type: "STRING"},
-					"args": {Type: "OBJECT"},
+					"name": {
+						Type:        "STRING",
+						Description: "Tool name from the catalog in the system prompt.",
+					},
+					"args": {
+						// Has to be STRING, not OBJECT. Gemini's structured
+						// output collapses an OBJECT field with no properties
+						// to {}, which means the model can't put real
+						// arguments through. As a STRING, the model emits a
+						// JSON-encoded args object — we unwrap it server-side.
+						Type:        "STRING",
+						Description: "JSON-encoded args object matching the tool's args schema. Example: \"{\\\"query\\\":\\\"bohemian rhapsody\\\"}\". Pass \"{}\" if the tool takes no args.",
+					},
 				},
-				Required: []string{"name"},
+				Required: []string{"name", "args"},
 			},
 		},
 		"response": {
 			Type:        "STRING",
 			Description: "The literal words to speak this turn. No JSON, no schema, no quotes around fields.",
 		},
+		"engagement": {
+			Type:        "STRING",
+			Description: "One of: respond | skip | dismiss. Use \"respond\" by default. Use \"skip\" when the utterance is NOT directed at you (singing, song lyrics, side-talk to someone else in the room) — and leave \"response\" empty. Use \"dismiss\" only when the user explicitly ends the conversation.",
+		},
 	},
-	Required: []string{"response"},
+	Required: []string{"response", "engagement"},
 }
 
 type geminiStreamChunk struct {

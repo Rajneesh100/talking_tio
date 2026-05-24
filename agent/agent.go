@@ -19,6 +19,28 @@ import (
 // pile up forever. Generous because the turn ctx is no longer governing.
 const memWriteTimeout = 10 * time.Second
 
+// IdleTimeout — after this much time with no `respond` decision while in
+// ACTIVE state, drop back to IDLE so the agent stops speaking up.
+const IdleTimeout = 90 * time.Second
+
+// EngagementState controls whether the agent vocalises. In IDLE we only
+// passively record what the mic transcribes; the LLM is not called and
+// nothing is spoken. ACTIVE is normal conversational mode entered after a
+// wake phrase.
+type EngagementState int
+
+const (
+	StateIdle EngagementState = iota
+	StateActive
+)
+
+// engagement values that may appear in the JSON envelope from the LLM.
+const (
+	engagementRespond  = "respond"
+	engagementSkip     = "skip"
+	engagementDismiss  = "dismiss"
+)
+
 // storeAsync writes to memory on a detached goroutine. We don't want barge-in
 // to cancel the user-input save (the user really did say it), and we don't
 // want to block the turn on the embedding round-trip.
@@ -33,9 +55,10 @@ func storeAsync(mem *memory.Store, text, source string) {
 }
 
 type AgentOutput struct {
-	Thought   string     `json:"thought,omitempty"`
-	ToolCalls []ToolCall `json:"tool_calls,omitempty"`
-	Response  string     `json:"response,omitempty"`
+	Thought    string     `json:"thought,omitempty"`
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	Response   string     `json:"response,omitempty"`
+	Engagement string     `json:"engagement,omitempty"` // respond | skip | dismiss
 }
 
 type ToolCall struct {
@@ -51,6 +74,10 @@ type Agent struct {
 	MaxContext    int
 	systemPrompt  string
 	history       []llm.Message
+
+	// Engagement state machine (Axis 1 of the real-listener design).
+	state        EngagementState
+	lastEngageAt time.Time
 }
 
 func New(chat llm.ChatProvider, mem *memory.Store, reg *tools.Registry, maxIter, maxCtx int) *Agent {
@@ -63,23 +90,66 @@ func New(chat llm.ChatProvider, mem *memory.Store, reg *tools.Registry, maxIter,
 		MaxContext:    maxCtx,
 		systemPrompt:  sys,
 		history:       []llm.Message{{Role: llm.RoleSystem, Content: sys}},
+		state:         StateIdle, // explicit; iota default already 0
 	}
 }
 
 // Turn runs one user-input → spoken-response cycle. userText is the
-// transcribed input. Speaker is the sentence-buffered TTS sink — the agent
-// feeds it the final "response" field as soon as the LLM emits it.
+// transcribed input. Speaker is the sentence-buffered TTS sink.
 //
-// Returns the final spoken text (or empty if the agent had nothing to say).
+// Engagement state machine:
+//   - IDLE: every utterance is stored, no LLM call, no audio. Only a wake
+//     phrase ("hey angela", etc.) transitions to ACTIVE.
+//   - ACTIVE: normal flow, BUT the LLM may decide per-utterance to skip
+//     (e.g. song lyrics, side-talk). After IdleTimeout with no respond, we
+//     drop back to IDLE.
+//
+// Returns the final spoken text (or empty if the agent stayed silent).
 func (a *Agent) Turn(ctx context.Context, userText string, speaker *audio.Speaker) (string, error) {
+	// Always-store: passive recording happens regardless of state.
+	storeAsync(a.Mem, userText, "user")
+
+	// State gate — decide whether to engage the LLM at all.
+	cleaned, woke := stripWakePhrase(userText)
+	switch a.state {
+	case StateIdle:
+		if !woke {
+			sideLog("idle", "passive (no wake): %q", firstWords(userText, 12))
+			speaker.Flush() // close the unused speaker cleanly
+			return "", nil
+		}
+		a.state = StateActive
+		a.lastEngageAt = time.Now()
+		sideLog("wake", "engaged")
+		if cleaned == "" {
+			// Bare wake ("Angela?") — quick audible ack, no LLM call.
+			ack := "Yeah?"
+			speaker.Feed(ack)
+			speaker.Flush()
+			storeAsync(a.Mem, ack, "agent")
+			return ack, nil
+		}
+		userText = cleaned
+	case StateActive:
+		if time.Since(a.lastEngageAt) > IdleTimeout {
+			a.state = StateIdle
+			sideLog("idle", "timed out (passive): %q", firstWords(userText, 12))
+			speaker.Flush()
+			return "", nil
+		}
+		// If the user re-wakes mid-conversation, strip the phrase so the
+		// LLM doesn't see "hey angela" as part of the question.
+		if woke {
+			userText = cleaned
+		}
+	}
+
+	// ── from here on, we're committed to running the LLM ──
+
 	// Order matters: search BEFORE storing, otherwise the just-stored row
 	// shows up as the top match (cosine ≈ 1 + BM25 hit) and the model sees
 	// the user's own current input as a "memory".
 	mems, _ := a.Mem.Search(ctx, userText, 3)
-
-	// Detached store after Search so a barge-in cancelling turnCtx doesn't
-	// lose what the user just said.
-	storeAsync(a.Mem, userText, "user")
 	if len(mems) > 0 {
 		sideLog("memory", "%d fetched (top %.2f)", len(mems), mems[0].Score)
 		for _, m := range mems {
@@ -97,41 +167,54 @@ func (a *Agent) Turn(ctx context.Context, userText string, speaker *audio.Speake
 
 	a.appendUser(userText, mems)
 
-	var finalResponse string
+	var (
+		finalResponse string
+		spoke         bool
+		dismissed     bool
+	)
 	for i := 0; i < a.MaxIterations; i++ {
 		raw, err := a.LLM.ChatStream(ctx, a.history, nil)
 		if err != nil {
 			return "", fmt.Errorf("agent: llm: %w", err)
 		}
-		a.history = append(a.history, llm.Message{Role: llm.RoleAssistant, Content: raw})
 
-		out, err := parseOutput(raw)
-		if err != nil {
+		out, perr := parseOutput(raw)
+		if perr != nil {
 			// JSON envelope malformed. Don't speak the raw output — it'd
-			// include {"thought":"..."}, schema noise, etc. Log and bail.
-			fmt.Fprintf(os.Stderr, "agent: parse failed (%v); raw=%q\n", err, raw)
+			// include {"thought":"..."}, schema noise, etc.
+			fmt.Fprintf(os.Stderr, "agent: parse failed (%v); raw=%q\n", perr, raw)
 			break
 		}
 
-		// Print thought to terminal for visibility, never to TTS.
 		if out.Thought != "" {
 			sideLog("thought", "%s", out.Thought)
 		}
 
-		// Speak whatever the model produced THIS iteration before doing
-		// anything else. When tool_calls is also set, this becomes the
-		// "Let me check that..." preamble that fills the silence while
-		// the tool runs.
+		// Honor the engagement decision BEFORE appending to history or
+		// speaking. Skipped iterations don't pollute the assistant history
+		// — they were "I heard but chose not to engage" moments.
+		switch out.Engagement {
+		case engagementSkip:
+			sideLog("skip", "(staying silent)")
+			speaker.Flush()
+			return "", nil
+		case engagementDismiss:
+			dismissed = true
+			// fallthrough into respond — we still speak the goodbye.
+			fallthrough
+		default: // respond (or unset)
+			a.history = append(a.history, llm.Message{Role: llm.RoleAssistant, Content: raw})
+		}
+
 		if out.Response != "" {
 			speaker.Feed(out.Response)
-			finalResponse = out.Response // last iteration wins for memory
+			finalResponse = out.Response
+			spoke = true
 		} else if len(out.ToolCalls) > 0 {
-			// Model forgot the preamble; insert a generic one so the user
-			// doesn't sit through silence while the tool executes.
 			speaker.Feed("One sec.")
 		}
 
-		if len(out.ToolCalls) > 0 {
+		if len(out.ToolCalls) > 0 && !dismissed {
 			results := a.runTools(ctx, out.ToolCalls)
 			a.history = append(a.history, llm.Message{
 				Role:    llm.RoleTool,
@@ -146,6 +229,13 @@ func (a *Agent) Turn(ctx context.Context, userText string, speaker *audio.Speake
 
 	if finalResponse != "" {
 		storeAsync(a.Mem, finalResponse, "agent")
+	}
+	if spoke {
+		a.lastEngageAt = time.Now()
+	}
+	if dismissed {
+		a.state = StateIdle
+		sideLog("dismiss", "back to passive listening")
 	}
 
 	a.trimHistory()
@@ -174,7 +264,8 @@ func (a *Agent) runTools(ctx context.Context, calls []ToolCall) string {
 			sb.WriteString(fmt.Sprintf("tool %q: not found\n", c.Name))
 			continue
 		}
-		res, err := t.Execute(ctx, c.Args)
+		args := normalizeArgs(c.Args)
+		res, err := t.Execute(ctx, args)
 		if err != nil {
 			sideLog("tool", "%s → error: %v", c.Name, err)
 			sb.WriteString(fmt.Sprintf("tool %q: error: %v\n", c.Name, err))
@@ -184,6 +275,31 @@ func (a *Agent) runTools(ctx context.Context, calls []ToolCall) string {
 		sb.WriteString(fmt.Sprintf("tool %q result: %s\n", c.Name, res))
 	}
 	return sb.String()
+}
+
+// normalizeArgs handles both providers' tool-call args shapes:
+//   - Ollama (json mode): args arrives as a raw JSON object, e.g. {"query":"x"}.
+//   - Gemini (structured output): args arrives as a JSON-encoded STRING, e.g. "{\"query\":\"x\"}".
+//
+// We detect the string case (raw begins with a quote) and unwrap to inner JSON
+// so every tool's Execute sees the same shape.
+func normalizeArgs(raw json.RawMessage) json.RawMessage {
+	trimmed := []byte(strings.TrimSpace(string(raw)))
+	if len(trimmed) == 0 {
+		return json.RawMessage("{}")
+	}
+	if trimmed[0] != '"' {
+		return trimmed // already an object/array/literal
+	}
+	var inner string
+	if err := json.Unmarshal(trimmed, &inner); err != nil {
+		return trimmed
+	}
+	inner = strings.TrimSpace(inner)
+	if inner == "" {
+		return json.RawMessage("{}")
+	}
+	return json.RawMessage(inner)
 }
 
 // trimHistory keeps the system prompt plus the most recent MaxContext

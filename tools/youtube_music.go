@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"os/exec"
 	"runtime"
+	"strings"
+	"time"
 )
 
 // YouTubeMusicTool opens YouTube Music in the default browser to a search
@@ -55,7 +57,17 @@ func (YouTubeMusicTool) Execute(ctx context.Context, raw json.RawMessage) (strin
 		return "", fmt.Errorf("youtube_music: query is required")
 	}
 
-	target := "https://music.youtube.com/search?q=" + url.QueryEscape(args.Query)
+	// Try to resolve the query to a specific YouTube video ID via yt-dlp so
+	// the browser opens `watch?v=…` (auto-plays) instead of the search page.
+	// If yt-dlp isn't installed or times out, fall back to the search URL.
+	var target, mode string
+	if videoID := resolveVideoID(ctx, args.Query); videoID != "" {
+		target = "https://music.youtube.com/watch?v=" + videoID
+		mode = "play"
+	} else {
+		target = "https://music.youtube.com/search?q=" + url.QueryEscape(args.Query)
+		mode = "search"
+	}
 
 	opener, openerArgs := platformOpener()
 	if opener == "" {
@@ -65,7 +77,35 @@ func (YouTubeMusicTool) Execute(ctx context.Context, raw json.RawMessage) (strin
 	if err := cmd.Run(); err != nil {
 		return "", fmt.Errorf("youtube_music: open: %w", err)
 	}
-	return fmt.Sprintf("opened YouTube Music search for %q at %s", args.Query, target), nil
+	return fmt.Sprintf("opened YouTube Music (%s mode) for %q at %s", mode, args.Query, target), nil
+}
+
+// resolveVideoID asks yt-dlp for the top YouTube result for the query and
+// returns its 11-character video ID. Returns "" if yt-dlp isn't installed,
+// times out, or returns something unexpected — caller falls back to a search
+// URL in that case. Install with: brew install yt-dlp
+func resolveVideoID(ctx context.Context, query string) string {
+	if _, err := exec.LookPath("yt-dlp"); err != nil {
+		return ""
+	}
+	resolveCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(resolveCtx, "yt-dlp",
+		"--skip-download",
+		"--print", "id",
+		"--default-search", "ytsearch1",
+		"ytsearch1:"+query,
+	).Output()
+	if err != nil {
+		return ""
+	}
+	id := strings.TrimSpace(string(out))
+	// YouTube video IDs are 11 chars. Reject anything else (yt-dlp warnings,
+	// playlist IDs, multiple lines, etc.) so we don't open a junk URL.
+	if len(id) != 11 {
+		return ""
+	}
+	return id
 }
 
 // platformOpener picks the right "open this URL in default browser" command.

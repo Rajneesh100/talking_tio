@@ -31,6 +31,7 @@ Prereqs: Go 1.22+, Docker, Ollama running locally with `gpt-oss:20b` and `nomic-
 ```bash
 cp .env.example .env          # only if .env doesn't already exist
 make db-up                    # postgres+pgvector on localhost:5433 (schema auto-applied)
+brew install yt-dlp
 make dev                      # go run ./cmd/tio
 ```
 

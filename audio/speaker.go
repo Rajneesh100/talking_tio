@@ -2,6 +2,8 @@ package audio
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"regexp"
 	"strings"
 	"sync"
@@ -50,7 +52,12 @@ func (s *Speaker) run() {
 			continue // drain quickly after Stop
 		}
 		// Speak is bound to s.ctx; cancelling kills the in-flight `say`.
-		_ = s.backend.Speak(s.ctx, sentence)
+		// On error (most commonly: say subprocess timed out because the
+		// audio device was busy), log and drop this sentence — keep going
+		// with the next one so the agent doesn't hang.
+		if err := s.backend.Speak(s.ctx, sentence); err != nil {
+			fmt.Fprintf(os.Stderr, "tts: speak failed: %v (sentence: %q)\n", err, sentence)
+		}
 	}
 }
 

@@ -12,8 +12,6 @@ stt/models/*.bin
 # vision sidecar runtime + venv
 vision/.venv/
 vision/visual_context.json
-vision/yolov8n.pt
-vision/yolov8s.pt
-vision/yolo*.pt
+vision/models/*.pt
 
 vendor/

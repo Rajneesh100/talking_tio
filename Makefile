@@ -1,7 +1,7 @@
 .PHONY: start setup dev build tidy lint test \
         ensure-whisper whisper-pull ensure-nowplaying ensure-ytdlp \
         db-up db-down db-shell db-migrate \
-        vision-setup vision-up vision-status \
+        vision-setup vision-pull vision-up vision-status \
         clean
 
 GO        ?= go
@@ -137,7 +137,19 @@ vision-setup:
 	@echo
 	@echo "Vision deps installed. Run: make vision-up"
 
-vision-up:
+YOLO_MODEL := vision/models/yolov8n.pt
+YOLO_URL   := https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8n.pt
+
+vision-pull:
+	@mkdir -p vision/models
+	@if [ -f $(YOLO_MODEL) ]; then \
+		echo "[ok] $(YOLO_MODEL) already present ($$(du -h $(YOLO_MODEL) | cut -f1))"; \
+	else \
+		echo "Downloading $(YOLO_MODEL) (~6 MB) ..."; \
+		curl -L --fail -o $(YOLO_MODEL) $(YOLO_URL); \
+	fi
+
+vision-up: vision-pull
 	@if [ ! -x vision/.venv/bin/python ]; then \
 		echo "ERROR: run 'make vision-setup' first"; exit 1; \
 	fi

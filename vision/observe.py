@@ -23,6 +23,7 @@ import signal
 import sys
 import tempfile
 import time
+import urllib.request
 from collections import deque
 from datetime import datetime
 from pathlib import Path
@@ -34,7 +35,31 @@ from ultralytics import YOLO
 
 VISION_DIR = Path(__file__).parent
 OUTPUT_PATH = VISION_DIR / "visual_context.json"
-YOLO_MODEL_PATH = VISION_DIR / "yolov8n.pt"  # auto-downloaded by ultralytics on first use
+
+# Pin the model inside the repo so the user's HF / ultralytics cache being
+# evicted doesn't force a redownload. Mirror of the stt/models/ pattern.
+MODELS_DIR = VISION_DIR / "models"
+YOLO_MODEL_PATH = MODELS_DIR / "yolov8n.pt"
+YOLO_MODEL_URL = "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8n.pt"
+
+
+def ensure_yolo_model():
+    """Download yolov8n.pt to vision/models/ if it's not already there.
+    Idempotent — no-op when the file is present."""
+    if YOLO_MODEL_PATH.exists() and YOLO_MODEL_PATH.stat().st_size > 1_000_000:
+        return
+    MODELS_DIR.mkdir(parents=True, exist_ok=True)
+    print(f"Downloading {YOLO_MODEL_PATH.name} → {YOLO_MODEL_PATH} ...", flush=True)
+    tmp = YOLO_MODEL_PATH.with_suffix(".pt.partial")
+    try:
+        urllib.request.urlretrieve(YOLO_MODEL_URL, tmp)
+        os.replace(tmp, YOLO_MODEL_PATH)
+    except Exception:
+        if tmp.exists():
+            tmp.unlink()
+        raise
+    size_mb = YOLO_MODEL_PATH.stat().st_size / (1024 * 1024)
+    print(f"  done ({size_mb:.1f} MB)", flush=True)
 
 DETECTION_INTERVAL_S = 1.0
 MOUTH_HISTORY = 10
@@ -136,7 +161,8 @@ def atomic_write_json(path: Path, payload: dict):
 
 
 def main():
-    print("Loading YOLO model...", flush=True)
+    ensure_yolo_model()
+    print(f"Loading YOLO model from {YOLO_MODEL_PATH} ...", flush=True)
     yolo = YOLO(str(YOLO_MODEL_PATH))
 
     print("Loading MediaPipe face mesh...", flush=True)

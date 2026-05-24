@@ -31,35 +31,49 @@ from pathlib import Path
 import cv2
 import mediapipe as mp
 import numpy as np
+from mediapipe.tasks import python as mp_tasks
+from mediapipe.tasks.python import vision as mp_vision
 from ultralytics import YOLO
 
 VISION_DIR = Path(__file__).parent
 OUTPUT_PATH = VISION_DIR / "visual_context.json"
 
-# Pin the model inside the repo so the user's HF / ultralytics cache being
-# evicted doesn't force a redownload. Mirror of the stt/models/ pattern.
+# Pin all models inside the repo so the user's HF / ultralytics / mediapipe
+# caches being evicted doesn't force redownloads. Mirror of stt/models/.
 MODELS_DIR = VISION_DIR / "models"
 YOLO_MODEL_PATH = MODELS_DIR / "yolov8n.pt"
 YOLO_MODEL_URL = "https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8n.pt"
+FACE_LANDMARKER_PATH = MODELS_DIR / "face_landmarker.task"
+FACE_LANDMARKER_URL = (
+    "https://storage.googleapis.com/mediapipe-models/face_landmarker/"
+    "face_landmarker/float16/1/face_landmarker.task"
+)
 
 
-def ensure_yolo_model():
-    """Download yolov8n.pt to vision/models/ if it's not already there.
-    Idempotent — no-op when the file is present."""
-    if YOLO_MODEL_PATH.exists() and YOLO_MODEL_PATH.stat().st_size > 1_000_000:
+def _download(url: str, dest: Path, min_bytes: int = 100_000):
+    """Idempotent download with atomic rename."""
+    if dest.exists() and dest.stat().st_size > min_bytes:
         return
-    MODELS_DIR.mkdir(parents=True, exist_ok=True)
-    print(f"Downloading {YOLO_MODEL_PATH.name} → {YOLO_MODEL_PATH} ...", flush=True)
-    tmp = YOLO_MODEL_PATH.with_suffix(".pt.partial")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    print(f"Downloading {dest.name} → {dest} ...", flush=True)
+    tmp = dest.with_suffix(dest.suffix + ".partial")
     try:
-        urllib.request.urlretrieve(YOLO_MODEL_URL, tmp)
-        os.replace(tmp, YOLO_MODEL_PATH)
+        urllib.request.urlretrieve(url, tmp)
+        os.replace(tmp, dest)
     except Exception:
         if tmp.exists():
             tmp.unlink()
         raise
-    size_mb = YOLO_MODEL_PATH.stat().st_size / (1024 * 1024)
+    size_mb = dest.stat().st_size / (1024 * 1024)
     print(f"  done ({size_mb:.1f} MB)", flush=True)
+
+
+def ensure_yolo_model():
+    _download(YOLO_MODEL_URL, YOLO_MODEL_PATH, min_bytes=1_000_000)
+
+
+def ensure_face_landmarker():
+    _download(FACE_LANDMARKER_URL, FACE_LANDMARKER_PATH, min_bytes=1_000_000)
 
 DETECTION_INTERVAL_S = 1.0
 MOUTH_HISTORY = 10
@@ -79,14 +93,17 @@ RELEVANT_OBJECTS = {
 }
 
 
-def head_direction(face_landmarks, frame_w):
+# Tasks API: result.face_landmarks is List[List[NormalizedLandmark]] —
+# one inner list per detected face, each landmark has .x .y .z in [0, 1].
+# Indices match the legacy face_mesh module (468-point topology).
+
+def head_direction(face_landmarks):
     """Classify head as 'left' | 'center' | 'right' from nose vs eye centers."""
     if not face_landmarks:
         return "unknown"
-    # MediaPipe face mesh landmark indices: 1=nose tip, 33=left eye, 263=right eye.
-    nose = face_landmarks.landmark[1]
-    left_eye = face_landmarks.landmark[33]
-    right_eye = face_landmarks.landmark[263]
+    nose = face_landmarks[1]
+    left_eye = face_landmarks[33]
+    right_eye = face_landmarks[263]
     eye_mid_x = (left_eye.x + right_eye.x) / 2.0
     dx = nose.x - eye_mid_x
     if dx < -0.025:
@@ -100,9 +117,8 @@ def mouth_open(face_landmarks):
     """Returns True if the gap between upper and lower lip is > 1.5% of face height."""
     if not face_landmarks:
         return False
-    # 13 = upper inner lip, 14 = lower inner lip.
-    upper = face_landmarks.landmark[13]
-    lower = face_landmarks.landmark[14]
+    upper = face_landmarks[13]  # upper inner lip
+    lower = face_landmarks[14]  # lower inner lip
     return abs(upper.y - lower.y) > 0.015
 
 
@@ -110,10 +126,10 @@ def smiling(face_landmarks):
     """Crude: horizontal mouth corners wider than vertical opening."""
     if not face_landmarks:
         return False
-    left = face_landmarks.landmark[61]
-    right = face_landmarks.landmark[291]
-    top = face_landmarks.landmark[13]
-    bot = face_landmarks.landmark[14]
+    left = face_landmarks[61]
+    right = face_landmarks[291]
+    top = face_landmarks[13]
+    bot = face_landmarks[14]
     horiz = abs(left.x - right.x)
     vert = abs(top.y - bot.y)
     return horiz > 0.07 and horiz > vert * 4.0
@@ -162,15 +178,20 @@ def atomic_write_json(path: Path, payload: dict):
 
 def main():
     ensure_yolo_model()
+    ensure_face_landmarker()
+
     print(f"Loading YOLO model from {YOLO_MODEL_PATH} ...", flush=True)
     yolo = YOLO(str(YOLO_MODEL_PATH))
 
-    print("Loading MediaPipe face mesh...", flush=True)
-    mp_face = mp.solutions.face_mesh
-    face_mesh = mp_face.FaceMesh(
-        max_num_faces=4,
-        refine_landmarks=False,
-        min_detection_confidence=0.5,
+    print(f"Loading MediaPipe FaceLandmarker from {FACE_LANDMARKER_PATH} ...", flush=True)
+    face_landmarker = mp_vision.FaceLandmarker.create_from_options(
+        mp_vision.FaceLandmarkerOptions(
+            base_options=mp_tasks.BaseOptions(model_asset_path=str(FACE_LANDMARKER_PATH)),
+            running_mode=mp_vision.RunningMode.IMAGE,
+            num_faces=4,
+            min_face_detection_confidence=0.5,
+            min_face_presence_confidence=0.5,
+        )
     )
 
     print("Opening camera...", flush=True)
@@ -220,19 +241,19 @@ def main():
                     elif label in RELEVANT_OBJECTS:
                         objects_found.add(label)
 
-            # MediaPipe: face details
-            face_results = face_mesh.process(rgb)
+            # MediaPipe Tasks API: detect on an mp.Image wrapping the RGB frame.
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+            face_results = face_landmarker.detect(mp_image)
             people = []
-            if face_results.multi_face_landmarks:
-                for face in face_results.multi_face_landmarks:
-                    is_open = mouth_open(face)
-                    mouth_hist.append(is_open)
-                    talking = sum(1 for x in mouth_hist if x) >= MOUTH_TALKING_THRESHOLD
-                    people.append({
-                        "talking": bool(talking),
-                        "head_direction": head_direction(face, w),
-                        "smiling": bool(smiling(face)),
-                    })
+            for face in face_results.face_landmarks:
+                is_open = mouth_open(face)
+                mouth_hist.append(is_open)
+                talking = sum(1 for x in mouth_hist if x) >= MOUTH_TALKING_THRESHOLD
+                people.append({
+                    "talking": bool(talking),
+                    "head_direction": head_direction(face),
+                    "smiling": bool(smiling(face)),
+                })
 
             # If YOLO saw a person but face mesh didn't, still record one entry.
             if person_count_yolo > 0 and not people:
@@ -263,7 +284,7 @@ def main():
 
     finally:
         cap.release()
-        face_mesh.close()
+        face_landmarker.close()
         print("vision sidecar shutting down.", flush=True)
 
 

@@ -13,5 +13,6 @@ stt/models/*.bin
 vision/.venv/
 vision/visual_context.json
 vision/models/*.pt
+vision/models/*.task
 
 vendor/

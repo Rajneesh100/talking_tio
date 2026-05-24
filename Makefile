@@ -140,6 +140,9 @@ vision-setup:
 YOLO_MODEL := vision/models/yolov8n.pt
 YOLO_URL   := https://github.com/ultralytics/assets/releases/download/v8.3.0/yolov8n.pt
 
+FACE_MODEL := vision/models/face_landmarker.task
+FACE_URL   := https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task
+
 vision-pull:
 	@mkdir -p vision/models
 	@if [ -f $(YOLO_MODEL) ]; then \
@@ -147,6 +150,12 @@ vision-pull:
 	else \
 		echo "Downloading $(YOLO_MODEL) (~6 MB) ..."; \
 		curl -L --fail -o $(YOLO_MODEL) $(YOLO_URL); \
+	fi
+	@if [ -f $(FACE_MODEL) ]; then \
+		echo "[ok] $(FACE_MODEL) already present ($$(du -h $(FACE_MODEL) | cut -f1))"; \
+	else \
+		echo "Downloading $(FACE_MODEL) (~4 MB) ..."; \
+		curl -L --fail -o $(FACE_MODEL) $(FACE_URL); \
 	fi
 
 vision-up: vision-pull

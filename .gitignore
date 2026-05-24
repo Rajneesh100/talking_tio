@@ -1,2 +1,12 @@
-tts_env/
-.cursor/*
+bin/
+*.exe
+*.test
+*.prof
+*.out
+
+.env
+.env.local
+
+stt/models/*.bin
+
+vendor/

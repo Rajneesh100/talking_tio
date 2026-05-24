@@ -1,0 +1,22 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: tio_postgres
+    environment:
+      POSTGRES_USER: tio
+      POSTGRES_PASSWORD: tio
+      POSTGRES_DB: tio
+    ports:
+      - "5433:5432"
+    volumes:
+      - tio_pgdata:/var/lib/postgresql/data
+      - ./memory/migrate.sql:/docker-entrypoint-initdb.d/01_migrate.sql:ro
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tio -d tio"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  tio_pgdata:

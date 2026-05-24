@@ -1,3 +1,0 @@
-cd memory_service
-docker build -t tio-memory .
-docker run -p 8000:8000 tio-memory

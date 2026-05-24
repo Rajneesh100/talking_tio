@@ -1,6 +1,0 @@
-Flask==2.3.3
-TTS==0.22.0
-sounddevice==0.4.6
-numpy==1.24.3
-torch>=1.13.0
-torchaudio>=0.13.0

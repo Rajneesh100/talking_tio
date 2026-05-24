@@ -1,5 +1,6 @@
 .PHONY: start setup dev build tidy lint test \
-        ensure-whisper whisper-pull ensure-nowplaying ensure-ytdlp \
+        ensure-env ensure-whisper whisper-pull ensure-nowplaying ensure-ytdlp \
+        verify-setup \
         db-up db-down db-shell db-migrate \
         vision-setup vision-pull vision-up vision-status \
         clean
@@ -25,16 +26,20 @@ WHISPER_MODEL := stt/models/ggml-small.bin
 start: setup dev
 
 # `make setup` — everything one-time:
+#   • copy .env.example → .env if missing
 #   • brew: whisper-cpp, yt-dlp, nowplaying-cli
 #   • download whisper ggml-small.bin
 #   • create vision/.venv and install python deps
 #   • download YOLO + face + hand mediapipe models
 #   • bring up postgres + apply schema
+#   • verify every expected file is on disk
 # Each sub-target is idempotent — re-running setup is cheap.
-setup: ensure-whisper ensure-ytdlp ensure-nowplaying \
+setup: ensure-env \
+       ensure-whisper ensure-ytdlp ensure-nowplaying \
        whisper-pull \
        vision-setup vision-pull \
-       db-up
+       db-up \
+       verify-setup
 	@echo
 	@echo "==============================================="
 	@echo "Setup complete. To run Tío:"
@@ -59,6 +64,52 @@ lint:
 
 test:
 	$(GO) test ./...
+
+# Copy .env.example → .env if .env doesn't exist. Never overwrites an
+# existing .env — your secrets stay put.
+ensure-env:
+	@if [ -f .env ]; then \
+		echo "[ok] .env already exists (not touching it)"; \
+	elif [ -f .env.example ]; then \
+		cp .env.example .env; \
+		echo "[ok] created .env from .env.example — edit it if you want a Gemini key"; \
+	else \
+		echo "WARN: neither .env nor .env.example present — Go will use built-in defaults"; \
+	fi
+
+# Final pass: confirm every artifact `setup` was supposed to produce is
+# actually on disk and at least minimally healthy.
+verify-setup:
+	@echo
+	@echo "===== verifying setup ====="
+	@ok=1; \
+	check() { \
+	  if [ -e "$$2" ]; then \
+	    size=$$(du -h "$$2" 2>/dev/null | cut -f1); \
+	    printf "  [ok] %-32s %s\n" "$$1" "$$2 ($$size)"; \
+	  else \
+	    printf "  [MISSING] %-28s %s\n" "$$1" "$$2"; \
+	    ok=0; \
+	  fi; \
+	}; \
+	check "config:"       .env; \
+	check "whisper model:" $(WHISPER_MODEL); \
+	check "yolo model:"    $(YOLO_MODEL); \
+	check "face model:"    $(FACE_MODEL); \
+	check "hand model:"    $(HAND_MODEL); \
+	check "vision venv:"   vision/.venv/bin/python; \
+	check "vision images:" vision/images; \
+	if docker ps --filter "name=tio_postgres" --format "{{.Names}}" 2>/dev/null | grep -q tio_postgres; then \
+	  printf "  [ok] %-32s tio_postgres (running)\n" "postgres:"; \
+	else \
+	  printf "  [MISSING] %-28s tio_postgres NOT running\n" "postgres:"; \
+	  ok=0; \
+	fi; \
+	if [ $$ok -eq 0 ]; then \
+	  echo "  → some artifacts missing — re-run 'make setup'"; \
+	  exit 1; \
+	fi; \
+	echo "============================="
 
 # Install whisper.cpp CLI via Homebrew if missing.
 ensure-whisper:

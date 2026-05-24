@@ -8,15 +8,39 @@ GO        ?= go
 BIN       := bin/tio
 WHISPER_MODEL := stt/models/ggml-small.bin
 
-# ===== one-shot =====
+# ===== three-command UX =====
+#
+#   1. make setup       — one-shot: brew deps, download every model
+#                          (whisper + yolo + face + hand), build the vision
+#                          python venv, start postgres. Idempotent so it's
+#                          safe to re-run anytime.
+#   2. make dev         — start the agent (mic + STT + LLM + TTS).
+#   3. make vision-up   — (separate terminal) start the camera sidecar so
+#                          Angela can see. macOS will prompt for camera
+#                          permission on first run.
+#
+# That's it. No other commands are mandatory.
 
-# `make start` — everything: install deps, pull model, start postgres, run agent.
+# Alias kept for muscle memory: `make start` = setup + dev.
 start: setup dev
 
-# `make setup` — make sure all external prereqs exist. Idempotent.
-setup: ensure-whisper whisper-pull ensure-ytdlp ensure-nowplaying db-up
+# `make setup` — everything one-time:
+#   • brew: whisper-cpp, yt-dlp, nowplaying-cli
+#   • download whisper ggml-small.bin
+#   • create vision/.venv and install python deps
+#   • download YOLO + face + hand mediapipe models
+#   • bring up postgres + apply schema
+# Each sub-target is idempotent — re-running setup is cheap.
+setup: ensure-whisper ensure-ytdlp ensure-nowplaying \
+       whisper-pull \
+       vision-setup vision-pull \
+       db-up
 	@echo
-	@echo "Setup complete."
+	@echo "==============================================="
+	@echo "Setup complete. To run Tío:"
+	@echo "  make dev          # in this terminal, talks to you"
+	@echo "  make vision-up    # in a SECOND terminal, opens the camera"
+	@echo "==============================================="
 
 # ===== individual targets =====
 

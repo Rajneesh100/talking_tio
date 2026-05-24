@@ -1,34 +1,50 @@
 # Talking Tío
 
-Local, voice-driven conversational agent. Listens through the mic, reasons with a local LLM, speaks back, and remembers the conversation. Designed for **human-level latency** (first audio out within ~1.5s of speech end) and a **tool-extensible** agent loop so new capabilities (web search, email, calendar, etc.) can be added without changing the core.
+Local-first voice + vision conversational agent. Listens through the mic, watches through the webcam, reasons with a local or hosted LLM, speaks back, and remembers the conversation. Designed for **human-level latency** (first audio out within ~1.5s of speech end) and a **tool-extensible** agent loop so new capabilities can be added without changing the core.
 
-Everything runs on the local machine. No cloud calls.
+Default LLM is local (Ollama). Gemini is optional and switchable via env. Camera + mic data never leaves the machine; only Gemini chat tokens (if enabled) hit the network.
+
+## Three-command UX
+
+```bash
+make setup        # one-shot: brew deps, model downloads, vision venv, postgres
+make dev          # terminal #1 — Angela listens and talks
+make vision-up    # terminal #2 — opens the camera so Angela can also see
+```
+
+`make setup` is idempotent — re-run anytime after deps drift. Anything inside `setup` is also exposed as a sub-target (`make whisper-pull`, `make vision-pull`, `make db-up`, etc.) for ad-hoc work.
 
 ## Tech Stack
 
-- **Language:** Go (single binary, `CGO_ENABLED=1` because whisper.cpp)
-- **STT:** whisper.cpp (via official Go bindings), Apple Silicon CoreML acceleration when available
-- **VAD:** WebRTC VAD (Go port)
-- **Audio I/O:** miniaudio via `gen2brain/malgo` (cross-platform mic + speaker)
-- **LLM:** Provider-agnostic. Today: Ollama (streaming NDJSON) or Gemini (streaming SSE). Selected by `LLM_PROVIDER`. Factory in `llm/factory.go`.
-- **Embeddings:** Same provider as chat by default. Ollama `nomic-embed-text` and Gemini `text-embedding-004` are both 768-dim (matches the `vector(768)` column).
-- **TTS:** macOS `say` (default). Pluggable backend interface — Piper / Kokoro can drop in.
-- **Memory:** PostgreSQL + `pgvector` extension. Single Docker container. **Used as a module, not a service** — Go code talks to Postgres over `pgx` directly.
-- **Config:** `.env` loaded by `godotenv`
+- **Language:** Go (single binary, `CGO_ENABLED=1` because miniaudio + webrtcvad cgo deps)
+- **STT:** `whisper-cpp` CLI subprocess, model `stt/models/ggml-small.bin`
+- **VAD:** WebRTC VAD (Go port at `maxhawkins/go-webrtcvad`)
+- **Audio I/O:** miniaudio via `gen2brain/malgo` (mic) + macOS `say` subprocess (speaker)
+- **LLM:** Provider-agnostic. Ollama (streaming NDJSON) or Gemini (streaming SSE, JSON-schema constrained, thinking disabled). Picked by `LLM_PROVIDER`. Factory in `llm/factory.go`.
+- **Embeddings:** Same provider as chat by default. Ollama `nomic-embed-text` and Gemini `gemini-embedding-001` both produce 768-dim vectors (matches the `vector(768)` column).
+- **TTS:** macOS `say` (default). Picks the system default voice when `TTS_VOICE` is empty — the only path to a downloaded Siri voice, since `say -v "<name>"` is gated by Apple.
+- **Memory:** PostgreSQL + `pgvector` + a generated `tsvector` column for **hybrid search** (vector cosine + BM25 keyword). Single Docker container. Used as a module — Go talks to Postgres over `pgx` directly.
+- **Vision (optional):** Python sidecar at `vision/observe.py`. YOLOv8n for objects, MediaPipe Tasks API for face mesh + hand landmarks, OpenCV Haar + grayscale histograms for face recognition against `vision/images/<name>.jpg`. Writes `vision/visual_context.json` at ~1Hz; the Go agent reads it on each Turn.
+- **Config:** `.env` loaded by `godotenv`.
 
 ## Project Layout
 
 ```
-cmd/tio/main.go      — entry point, wires audio loop, agent, memory, tools
-agent/               — agent loop, system prompt, structured-output schema
-audio/               — mic capture (VAD-gated), speaker queue (sentence-buffered)
-stt/                 — whisper.cpp CLI wrapper, model files cached under stt/models/
-tts/                 — backend interface + macOS `say` impl
+cmd/tio/main.go      — entry point, wires audio loop, agent, memory, tools, vision path
+agent/               — agent loop, JSON envelope, engagement state machine, wake words, prompt
+audio/               — mic capture (malgo + VAD) and sentence-buffered speaker queue
+stt/                 — whisper.cpp CLI wrapper + hallucination filter
+                       stt/models/   pinned whisper ggml model (gitignored)
+tts/                 — Backend interface + macOS `say` impl
 llm/                 — provider interfaces, factory, Ollama + Gemini impls
-memory/              — pgvector-backed memory module + migrate.sql
-tools/               — Tool interface, registry, built-in tools (clock smoke test)
+memory/              — pgvector store + hybrid search + migrate.sql
+tools/               — Tool interface, Registry, every concrete tool
+vision/              — python sidecar (observe.py) + Go consumer (context.go)
+                       vision/models/   YOLO + face + hand models (gitignored)
+                       vision/images/   reference photos for face recognition (gitignored)
 config/              — .env loader, all config structs
 docker-compose.yml   — postgres+pgvector only, port 5433
+Makefile             — 3-command UX (setup / dev / vision-up) + sub-targets
 ```
 
 ## End-to-End Turn
@@ -135,12 +151,22 @@ Register at startup in `tools/registry.go → NewRegistry()` via `r.Register(New
 
 No core code touches a specific tool name. The agent's `tool_calls` dispatch is purely registry-driven.
 
-### Planned (not yet implemented) Tools
+### Tools currently registered (see `cmd/tio/main.go`)
 
-- `web_search` — DuckDuckGo HTML scrape or SearXNG instance
+| Tool | Purpose |
+|------|---------|
+| `clock` | Current ISO local time. |
+| `youtube_music` | Resolve query via `yt-dlp` → open `music.youtube.com/watch?v=…` (autoplay). Auto-stops the previous song first. |
+| `stop_music` | `nowplaying-cli pause` + close YouTube Music tabs across Chrome/Brave/Arc. |
+| `memory_search` | Hybrid (vector + BM25) search over the `memories` table. |
+| `memory_recent` | Last N memories chronologically. |
+| `web_search` | DuckDuckGo Instant Answer API — Wikipedia-quality summary of top result. |
+
+### Planned (not yet implemented)
+
 - `read_email` — IMAP read-only over a Gmail app password
 - `calendar_lookup` — CalDAV / Google Calendar API
-- `clock` — current time / timezone helper (small, useful for testing the loop)
+- `set_reminder` — local timer + future spontaneous prompt
 
 ## Audio Pipeline
 
@@ -155,17 +181,31 @@ No core code touches a specific tool name. The agent's `tool_calls` dispatch is 
 - Each sentence goes to the configured `tts.Backend` (default `say`)
 - Sentences are played strictly in order; the agent goroutine blocks on queue drain before releasing the interaction lock
 
+## Engagement state machine
+
+The agent is not always "on". `Agent.state` is one of `StateIdle` / `StateActive`, plus a `musicActive` flag that overrides state to require a wake phrase whenever a song is playing.
+
+Wake phrases live in `agent/wake.go` (`hey angela`, `ok angela`, `angela`, `hey`, `play`, `change`, `stop`, …). Any of those entering the transcribed input flips state IDLE → ACTIVE and strips the wake portion before the LLM sees it.
+
+Once ACTIVE, fluid back-and-forth keeps state ACTIVE until either:
+- `IdleTimeout` (90 s) elapses without a `respond` decision, or
+- the model picks `"engagement": "dismiss"` (explicit goodbye).
+
+Per-turn, the LLM also picks `"engagement": "skip"` for utterances that look like song lyrics, side-talk, or fragmentary noise. Skipped turns are still stored in memory (passive listening) but produce no audio.
+
+While `youtube_music` is playing, `musicActive=true` forces wake-phrase-required mode even in ACTIVE — Angela won't talk over a song. `stop_music` clears the flag.
+
 ## Concurrency Model
 
 ```
-main goroutine        — startup, signal handling
-mic goroutine         — capture + VAD + STT, emits user_text on chan
-agent goroutine       — owns the LLM session, drives the agent loop, sentence-feeds the speaker
-speaker goroutine     — pops sentences, blocks on TTS playback
-spontaneous goroutine — periodic ticker, posts a synthetic user_text when idle
+main goroutine        — startup, signal handling, owns the conversation loop
+mic goroutine         — malgo audio callback + VAD framing, emits Segments on a chan
+agent goroutine       — per-turn: whisper subprocess, LLM stream, tool calls, mem writes
+speaker goroutine     — pops sentences, blocks on `say` subprocess
+turn-cancel ctx       — barge-in cancels in-flight HTTP read + kills `say` via CommandContext
 ```
 
-A single `interactionLock` (Go mutex) serializes mic-driven and spontaneous-driven turns. A 5-minute cooldown after voice input mutes the spontaneous goroutine.
+No central interaction lock — barge-in (a new mic segment arriving while a turn is running) cancels the previous turn's context, which cascades into the LLM HTTP body read and the speaker's per-sentence `say` ctx. Memory writes are detached with their own timeout so they survive cancellation.
 
 ## Key Configuration (`.env`)
 
@@ -180,7 +220,11 @@ OLLAMA_EMBED_MODEL=nomic-embed-text
 
 GEMINI_API_KEY=
 GEMINI_MODEL=gemini-2.5-flash
-GEMINI_EMBED_MODEL=text-embedding-004
+GEMINI_EMBED_MODEL=gemini-embedding-001
+# Gemini chat is forced to structured JSON output (responseSchema + thinkingBudget=0)
+# so the agent's JSON envelope is always parseable.
+
+VISION_CONTEXT_PATH=./vision/visual_context.json
 
 WHISPER_MODEL_PATH=./stt/models/ggml-small.bin
 WHISPER_LANGUAGE=en
@@ -206,16 +250,39 @@ That's it — `agent.Agent` and `memory.Store` already take the interfaces, not 
 
 ## Dev Commands
 
+The mandatory three:
+
 ```bash
-make dev          # go run ./cmd/tio
-make build        # go build -o bin/tio ./cmd/tio
-make db-up        # docker compose up -d postgres   (the only container)
-make db-down      # docker compose down
-make db-shell     # psql into local postgres
-make db-migrate   # apply memory/migrate.sql
-make whisper-pull # download ggml-small.bin into stt/models/
-make lint         # go vet + staticcheck
-make test         # go test ./...
+make setup        # everything one-time: brew deps, model downloads, vision venv, postgres
+make dev          # run the agent
+make vision-up    # (separate terminal) start the camera sidecar
+```
+
+Sub-targets `make setup` already runs — listed for ad-hoc work:
+
+```bash
+# brew installs (all idempotent)
+make ensure-whisper       # brew install whisper-cpp
+make ensure-ytdlp         # brew install yt-dlp
+make ensure-nowplaying    # brew install nowplaying-cli
+
+# model downloads
+make whisper-pull         # ggml-small.bin (466 MB) into stt/models/
+make vision-pull          # yolov8n.pt + face/hand landmarker .task files
+
+# vision sidecar
+make vision-setup         # create vision/.venv + pip install (no model download)
+make vision-status        # pretty-print latest vision/visual_context.json
+
+# postgres
+make db-up                # bring up postgres+pgvector
+make db-down              # tear it down
+make db-shell             # psql into the container
+make db-migrate           # re-apply memory/migrate.sql (idempotent)
+
+# go
+make build                # go build -o bin/tio ./cmd/tio
+make tidy / lint / test   # go mod tidy / go vet / go test ./...
 ```
 
 ## Conventions
@@ -225,5 +292,8 @@ make test         # go test ./...
 - TTS-friendly output is enforced in the system prompt: no markdown, no emojis, rich punctuation for prosody (commas, em-dashes, question marks). See `agent/prompt.go`.
 - Whisper hallucinations (`"thanks for watching"`, `"see you in the next video"`, `"thank you for your time"`) are filtered in `stt/whisper.go` before they reach the agent. Add new phrases to `stt/hallucinations.go` as you find them.
 - The mic VAD pauses **during** TTS playback. Otherwise the mic captures the agent's own voice through the speakers and starts a feedback loop.
+- Visual context is a HINT to the LLM, never a verdict — audio still wins ties. The prompt explicitly tells Angela she CAN see, and includes worked examples for "now" / "recent (5s) motion" / "since last turn delta" lines.
+- Music sleep: while a `youtube_music` tool call is active, the agent forces wake-phrase-required mode so Angela doesn't talk over lyrics. `stop_music` clears it.
+- Model weights are downloaded into the repo (`stt/models/`, `vision/models/`) and gitignored individually so the folder structure stays tracked. Files >100 MB (i.e. `ggml-small.bin`) need Git LFS if you want to push them to GitHub.
 - Postgres is the **only** containerized component. Do not split memory or any other concern into a separate service without a strong reason; we tried and the latency / ops overhead wasn't worth it.
 - Model weights (whisper, etc.) live under the repo (e.g. `stt/models/`) and are gitignored individually. The folders themselves stay tracked so structure is documented.

@@ -10,10 +10,12 @@ __pycache__/
 .env
 .env.local
 
+stt/models/*.bin
 
 # vision sidecar runtime + venv
 vision/.venv/
 vision/visual_context.json
+vision/models/*.pt
 vision/models/*.task
 
 # face-recognition reference photos — personal, never committed.

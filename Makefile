@@ -143,6 +143,9 @@ YOLO_URL   := https://github.com/ultralytics/assets/releases/download/v8.3.0/yol
 FACE_MODEL := vision/models/face_landmarker.task
 FACE_URL   := https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task
 
+HAND_MODEL := vision/models/hand_landmarker.task
+HAND_URL   := https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task
+
 vision-pull:
 	@mkdir -p vision/models
 	@if [ -f $(YOLO_MODEL) ]; then \
@@ -156,6 +159,12 @@ vision-pull:
 	else \
 		echo "Downloading $(FACE_MODEL) (~4 MB) ..."; \
 		curl -L --fail -o $(FACE_MODEL) $(FACE_URL); \
+	fi
+	@if [ -f $(HAND_MODEL) ]; then \
+		echo "[ok] $(HAND_MODEL) already present ($$(du -h $(HAND_MODEL) | cut -f1))"; \
+	else \
+		echo "Downloading $(HAND_MODEL) (~8 MB) ..."; \
+		curl -L --fail -o $(HAND_MODEL) $(HAND_URL); \
 	fi
 
 vision-up: vision-pull

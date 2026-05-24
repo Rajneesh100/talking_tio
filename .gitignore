@@ -15,4 +15,9 @@ vision/visual_context.json
 vision/models/*.pt
 vision/models/*.task
 
+# face-recognition reference photos — personal, never committed.
+vision/images/*.jpg
+vision/images/*.jpeg
+vision/images/*.png
+
 vendor/

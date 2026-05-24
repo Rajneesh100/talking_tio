@@ -8,6 +8,15 @@ memory.
 
 For the architecture and conventions in detail, see [CLAUDE.md](CLAUDE.md).
 
+> **Platform support — macOS only (for now).** TTS uses the macOS `say`
+> binary, the `stop_music` tool drives the browser via AppleScript, and the
+> setup script assumes Homebrew. The rest of the stack (Go agent, mic
+> capture, whisper, vision sidecar, Postgres) is cross-platform — porting
+> would mean swapping `tts/say.go` for a Linux backend (Piper) or Windows
+> backend (PowerShell `System.Speech`), and replacing the AppleScript bits
+> in `tools/media_control.go` with `playerctl` / `xdotool` on Linux. Both
+> tracked as future work.
+
 ---
 
 ## Quick start (three commands)

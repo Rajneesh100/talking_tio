@@ -61,6 +61,7 @@ func run() error {
 	reg.Register(tools.NewStopMusicTool())
 	reg.Register(tools.NewMemorySearchTool(mem))
 	reg.Register(tools.NewMemoryRecentTool(mem))
+	reg.Register(tools.NewWebSearchTool())
 
 	ttsBackend, err := tts.New(cfg.TTSBackend, cfg.TTSVoice)
 	if err != nil {

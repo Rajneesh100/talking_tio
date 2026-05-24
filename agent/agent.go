@@ -89,6 +89,12 @@ type Agent struct {
 	// track changes that happen between user utterances (longer horizon than
 	// the 5-second motion window inside one snapshot's buffer).
 	lastVisualSnapshot *vision.Snapshot
+
+	// musicActive turns on when the youtube_music tool successfully runs and
+	// off when stop_music runs. While true, Turn refuses to engage the LLM
+	// unless the user utterance contains a wake phrase — so the mic still
+	// records everything but Angela won't barge in over a playing song.
+	musicActive bool
 }
 
 func New(chat llm.ChatProvider, mem *memory.Store, reg *tools.Registry, maxIter, maxCtx int) *Agent {
@@ -122,6 +128,16 @@ func (a *Agent) Turn(ctx context.Context, userText string, speaker *audio.Speake
 
 	// State gate — decide whether to engage the LLM at all.
 	cleaned, woke := stripWakePhrase(userText)
+
+	// Music-sleep override: while music is playing, refuse to wake the LLM
+	// unless a wake phrase is present, even if we're nominally in ACTIVE
+	// state. The mic still records everything (storeAsync above).
+	if a.musicActive && !woke {
+		sideLog("idle", "music playing — passive (no wake): %q", firstWords(userText, 12))
+		speaker.Flush()
+		return "", nil
+	}
+
 	switch a.state {
 	case StateIdle:
 		if !woke {
@@ -325,6 +341,21 @@ func (a *Agent) runTools(ctx context.Context, calls []ToolCall) string {
 		}
 		sideLog("tool", "%s → %s", c.Name, truncate(res, 80))
 		sb.WriteString(fmt.Sprintf("tool %q result: %s\n", c.Name, res))
+
+		// Track music state so Turn can force wake-phrase mode while songs
+		// are playing. Only flips on success — errors above already skipped.
+		switch c.Name {
+		case "youtube_music":
+			if !a.musicActive {
+				sideLog("music", "→ sleep mode (wake phrase required until stop_music)")
+			}
+			a.musicActive = true
+		case "stop_music":
+			if a.musicActive {
+				sideLog("music", "→ awake (normal engagement)")
+			}
+			a.musicActive = false
+		}
 	}
 	return sb.String()
 }

@@ -111,11 +111,26 @@ db-migrate:
 # ===== vision sidecar (optional) =====
 # Run vision-setup once, then vision-up in a separate terminal alongside `make dev`.
 # Camera permission is prompted by macOS the first time Python opens cam 0.
+#
+# Vision deps (mediapipe + ultralytics) only support Python 3.10/3.11/3.12 —
+# NOT 3.13+. We resolve a compatible interpreter explicitly so the venv stays
+# usable regardless of which python3 your shell happens to resolve to.
+
+VISION_PY := $(shell command -v python3.11 2>/dev/null || command -v python3.12 2>/dev/null || command -v python3.10 2>/dev/null)
 
 vision-setup:
+	@if [ -z "$(VISION_PY)" ]; then \
+		echo "ERROR: need python3.10, 3.11, or 3.12 on PATH."; \
+		echo "Install with: brew install python@3.11"; \
+		exit 1; \
+	fi
+	@if [ -d vision/.venv ] && ! vision/.venv/bin/python -c "import sys; sys.exit(0 if sys.version_info[:2] in [(3,10),(3,11),(3,12)] else 1)" >/dev/null 2>&1; then \
+		echo "vision/.venv uses incompatible Python; recreating with $(VISION_PY)..."; \
+		rm -rf vision/.venv; \
+	fi
 	@if [ ! -d vision/.venv ]; then \
-		echo "Creating vision/.venv..."; \
-		python3 -m venv vision/.venv; \
+		echo "Creating vision/.venv with $(VISION_PY)..."; \
+		$(VISION_PY) -m venv vision/.venv; \
 	fi
 	vision/.venv/bin/pip install --upgrade pip
 	vision/.venv/bin/pip install -r vision/requirements.txt

@@ -1,4 +1,8 @@
-ultralytics==8.3.0
-mediapipe==0.10.5
-opencv-python==4.10.0.84
-numpy>=1.24
+# Requires Python 3.10, 3.11, or 3.12. mediapipe doesn't yet ship wheels for
+# 3.13+, and ultralytics' supported Python range tops out at 3.12.
+# `make vision-setup` picks python3.11 from /opt/homebrew automatically.
+
+ultralytics>=8.3.0
+mediapipe>=0.10.14
+opencv-python>=4.10.0
+numpy>=1.24,<2.0

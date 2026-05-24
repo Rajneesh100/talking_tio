@@ -13,6 +13,7 @@ import (
 	"github.com/rajneesh/talking_tio/llm"
 	"github.com/rajneesh/talking_tio/memory"
 	"github.com/rajneesh/talking_tio/tools"
+	"github.com/rajneesh/talking_tio/vision"
 )
 
 // memWriteTimeout caps detached memory writes so a slow embedding API can't
@@ -78,6 +79,10 @@ type Agent struct {
 	// Engagement state machine (Axis 1 of the real-listener design).
 	state        EngagementState
 	lastEngageAt time.Time
+
+	// VisionPath is the JSON snapshot file written by vision/observe.py.
+	// Empty string disables visual context injection.
+	VisionPath string
 }
 
 func New(chat llm.ChatProvider, mem *memory.Store, reg *tools.Registry, maxIter, maxCtx int) *Agent {
@@ -244,6 +249,17 @@ func (a *Agent) Turn(ctx context.Context, userText string, speaker *audio.Speake
 
 func (a *Agent) appendUser(userText string, mems []memory.Memory) {
 	var sb strings.Builder
+
+	// Visual context (if the sidecar is running and the snapshot is fresh).
+	// Goes before memories so the model reads the "is this even for me?"
+	// hint first.
+	if snap, ok := vision.Read(a.VisionPath); ok {
+		sideLog("visual", "%s (age %.1fs)", snap.Summary, snap.AgeSeconds)
+		sb.WriteString("[visual context]\n")
+		sb.WriteString(snap.Summary)
+		sb.WriteString("\n\n")
+	}
+
 	if len(mems) > 0 {
 		sb.WriteString("[relevant memories]\n")
 		for _, m := range mems {

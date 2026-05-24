@@ -79,6 +79,7 @@ func run() error {
 	defer mic.Close()
 
 	ag := agent.New(chat, mem, reg, cfg.AgentMaxIterations, cfg.AgentContextMaxMessages)
+	ag.VisionPath = cfg.VisionContextPath
 
 	bargeIn := strings.EqualFold(os.Getenv("BARGE_IN"), "true")
 	mode := "mic muted during Tío's turn"

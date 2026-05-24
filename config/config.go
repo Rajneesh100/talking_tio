@@ -31,6 +31,10 @@ type Config struct {
 
 	PostgresURI string
 
+	// VisionContextPath is the JSON snapshot file produced by
+	// vision/observe.py. Empty disables visual context injection.
+	VisionContextPath string
+
 	AgentContextMaxMessages    int
 	AgentMaxIterations         int
 	SpontaneousIntervalSeconds int
@@ -53,6 +57,7 @@ func Load() (*Config, error) {
 		TTSBackend:                 env("TTS_BACKEND", "say"),
 		TTSVoice:                   env("TTS_VOICE", ""),
 		PostgresURI:                env("POSTGRES_URI", "postgres://tio:tio@localhost:5433/tio?sslmode=disable"),
+		VisionContextPath:          env("VISION_CONTEXT_PATH", "./vision/visual_context.json"),
 		AgentContextMaxMessages:    envInt("AGENT_CONTEXT_MAX_MESSAGES", 8),
 		AgentMaxIterations:         envInt("AGENT_MAX_ITERATIONS", 4),
 		SpontaneousIntervalSeconds: envInt("SPONTANEOUS_INTERVAL_SECONDS", 35),

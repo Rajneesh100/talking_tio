@@ -1,6 +1,7 @@
 .PHONY: start setup dev build tidy lint test \
         ensure-whisper whisper-pull ensure-nowplaying ensure-ytdlp \
         db-up db-down db-shell db-migrate \
+        vision-setup vision-up vision-status \
         clean
 
 GO        ?= go
@@ -106,6 +107,33 @@ db-shell:
 
 db-migrate:
 	docker exec -i tio_postgres psql -U tio -d tio < memory/migrate.sql
+
+# ===== vision sidecar (optional) =====
+# Run vision-setup once, then vision-up in a separate terminal alongside `make dev`.
+# Camera permission is prompted by macOS the first time Python opens cam 0.
+
+vision-setup:
+	@if [ ! -d vision/.venv ]; then \
+		echo "Creating vision/.venv..."; \
+		python3 -m venv vision/.venv; \
+	fi
+	vision/.venv/bin/pip install --upgrade pip
+	vision/.venv/bin/pip install -r vision/requirements.txt
+	@echo
+	@echo "Vision deps installed. Run: make vision-up"
+
+vision-up:
+	@if [ ! -x vision/.venv/bin/python ]; then \
+		echo "ERROR: run 'make vision-setup' first"; exit 1; \
+	fi
+	vision/.venv/bin/python vision/observe.py
+
+vision-status:
+	@if [ -f vision/visual_context.json ]; then \
+		cat vision/visual_context.json | python3 -m json.tool; \
+	else \
+		echo "no snapshot yet — start the sidecar with 'make vision-up'"; \
+	fi
 
 clean:
 	rm -rf bin

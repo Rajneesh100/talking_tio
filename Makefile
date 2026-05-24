@@ -1,5 +1,5 @@
 .PHONY: start setup dev build tidy lint test \
-        ensure-whisper whisper-pull \
+        ensure-whisper whisper-pull ensure-nowplaying ensure-ytdlp \
         db-up db-down db-shell db-migrate \
         clean
 
@@ -13,7 +13,7 @@ WHISPER_MODEL := stt/models/ggml-small.bin
 start: setup dev
 
 # `make setup` — make sure all external prereqs exist. Idempotent.
-setup: ensure-whisper whisper-pull db-up
+setup: ensure-whisper whisper-pull ensure-ytdlp ensure-nowplaying db-up
 	@echo
 	@echo "Setup complete."
 
@@ -46,6 +46,34 @@ ensure-whisper:
 		fi; \
 		echo "Installing whisper-cpp via brew..."; \
 		brew install whisper-cpp; \
+	fi
+
+# Install yt-dlp via Homebrew if missing — used by youtube_music to resolve
+# search queries to a specific videoId so the browser opens watch?v=… (auto-
+# plays) instead of dropping the user on a search results page.
+ensure-ytdlp:
+	@if command -v yt-dlp >/dev/null 2>&1; then \
+		echo "[ok] yt-dlp already installed"; \
+	else \
+		if ! command -v brew >/dev/null 2>&1; then \
+			echo "WARN: brew not found, skipping yt-dlp install (youtube_music will fall back to search)"; \
+		else \
+			echo "Installing yt-dlp via brew..."; brew install yt-dlp; \
+		fi; \
+	fi
+
+# Install nowplaying-cli via Homebrew if missing — used by stop_music to pause
+# any media playing through macOS's Now Playing system. Optional: stop_music
+# falls back to closing browser tabs if this isn't available.
+ensure-nowplaying:
+	@if command -v nowplaying-cli >/dev/null 2>&1; then \
+		echo "[ok] nowplaying-cli already installed"; \
+	else \
+		if ! command -v brew >/dev/null 2>&1; then \
+			echo "WARN: brew not found, skipping nowplaying-cli (stop_music will rely on tab-close only)"; \
+		else \
+			echo "Installing nowplaying-cli via brew..."; brew install nowplaying-cli; \
+		fi; \
 	fi
 
 # Download ggml-small.bin if missing.

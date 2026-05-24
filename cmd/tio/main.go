@@ -58,6 +58,7 @@ func run() error {
 	reg := tools.NewRegistry()
 	reg.Register(tools.NewClockTool())
 	reg.Register(tools.NewYouTubeMusicTool())
+	reg.Register(tools.NewStopMusicTool())
 	reg.Register(tools.NewMemorySearchTool(mem))
 	reg.Register(tools.NewMemoryRecentTool(mem))
 

@@ -57,6 +57,11 @@ func (YouTubeMusicTool) Execute(ctx context.Context, raw json.RawMessage) (strin
 		return "", fmt.Errorf("youtube_music: query is required")
 	}
 
+	// Auto-stop whatever is currently playing so we don't end up with two
+	// audio streams. Cheap and stateless — if nothing is playing the helper
+	// just closes zero tabs.
+	stopNote := stopBrowserMusic(ctx)
+
 	// Try to resolve the query to a specific YouTube video ID via yt-dlp so
 	// the browser opens `watch?v=…` (auto-plays) instead of the search page.
 	// If yt-dlp isn't installed or times out, fall back to the search URL.
@@ -77,7 +82,8 @@ func (YouTubeMusicTool) Execute(ctx context.Context, raw json.RawMessage) (strin
 	if err := cmd.Run(); err != nil {
 		return "", fmt.Errorf("youtube_music: open: %w", err)
 	}
-	return fmt.Sprintf("opened YouTube Music (%s mode) for %q at %s", mode, args.Query, target), nil
+	return fmt.Sprintf("[pre-stop: %s] opened YouTube Music (%s mode) for %q at %s",
+		stopNote, mode, args.Query, target), nil
 }
 
 // resolveVideoID asks yt-dlp for the top YouTube result for the query and

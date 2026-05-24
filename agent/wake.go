@@ -13,6 +13,10 @@ var wakePhrases = []string{
 	"okay angela",
 	"yo angela",
 	"angela",
+	"hey",
+	"play",
+	"change",
+	"stop",
 }
 
 // One regex per phrase, anchored at word boundaries. Compiled once at init.
@@ -37,9 +41,9 @@ func compileWakePhraseRegexes() []*regexp.Regexp {
 func stripWakePhrase(text string) (cleaned string, woke bool) {
 	for _, re := range wakePhraseRes {
 		if loc := re.FindStringIndex(text); loc != nil {
-			cleaned = text[:loc[0]] + " " + text[loc[1]:]
-			cleaned = normalizeAfterStrip(cleaned)
-			return cleaned, true
+			// cleaned = text[:loc[0]] + " " + text[loc[1]:]
+			// cleaned = normalizeAfterStrip(cleaned)
+			return text, true
 		}
 	}
 	return text, false

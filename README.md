@@ -1,4 +1,4 @@
-# Talking Tío
+# Alexa-nxt
 
 Local-first voice agent in Go. Hears you through the mic, watches you through
 the camera, reasons with a local LLM (Ollama) or Gemini, talks back through

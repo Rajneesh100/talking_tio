@@ -1,4 +1,4 @@
-# Talking Tío
+# Talking Alexa-nxt
 
 Local-first voice + vision conversational agent. Listens through the mic, watches through the webcam, reasons with a local or hosted LLM, speaks back, and remembers the conversation. Designed for **human-level latency** (first audio out within ~1.5s of speech end) and a **tool-extensible** agent loop so new capabilities can be added without changing the core.
 
